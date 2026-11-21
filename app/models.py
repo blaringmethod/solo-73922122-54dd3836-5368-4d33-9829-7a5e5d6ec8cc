@@ -44,6 +44,44 @@ class Counterexample(BaseModel):
     query_b_result: list[list[Any]] = Field(..., description="反例数据下 query_b 的实际结果")
 
 
+class ArchiveRequest(BaseModel):
+    query: str = Field(
+        ...,
+        description=(
+            "现有语法下的一条质控 SELECT，必须是 stations LEFT [OUTER] JOIN "
+            "readings（stations 在左）的查询"
+        ),
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "query": (
+                        "SELECT s.id, r.value FROM stations s "
+                        "LEFT JOIN readings r ON s.id = r.station_id "
+                        "WHERE r.value IS NULL OR r.value >= 10"
+                    )
+                }
+            ]
+        }
+    }
+
+
+class ArchiveResponse(BaseModel):
+    script: str = Field(..., description="可在 PostgreSQL 执行的归档脚本")
+    canonical_query: str = Field(
+        ..., description="脚本内用于核对的规范化原查询"
+    )
+    view: str = Field(..., description="取数视图（schema.view）")
+    archive_tables: list[str] = Field(
+        ..., description="归档表（站点表、压缩读数表，含份数列）"
+    )
+    view_columns: tuple[str, ...] = Field(
+        ..., description="视图列顺序：原投影列 + 次数列"
+    )
+
+
 class CheckResponse(BaseModel):
     verdict: Literal["EQUIVALENT", "NOT_EQUIVALENT", "UNKNOWN"] = Field(
         ...,

@@ -5,8 +5,15 @@ import os
 
 from fastapi import Body, FastAPI, HTTPException
 
+from .archive import ArchiveUnsupported, build_archive_script
 from .ir import MAX_ROWS
-from .models import CheckRequest, CheckResponse, Counterexample
+from .models import (
+    ArchiveRequest,
+    ArchiveResponse,
+    CheckRequest,
+    CheckResponse,
+    Counterexample,
+)
 from .sql_parser import SqlRejected, parse_query
 from .verifier import Verifier, setup_sql
 from .z3check import check_bounded_equivalence
@@ -22,6 +29,8 @@ app = FastAPI(
         "按列位置比较结果多重集（忽略顺序、保留重复）。"
         "差异会在隔离 PostgreSQL 中实际复现后才报 NOT_EQUIVALENT；"
         "界内无反例报 EQUIVALENT；求解或复现失败报 UNKNOWN。"
+        "另提供 POST /archive/script：为 stations LEFT JOIN readings 的质控查询"
+        "生成 PostgreSQL 归档脚本（压缩读数、保留份数、核对后整批替换）。"
     ),
     version="1.0.0",
 )
@@ -82,12 +91,23 @@ def _solver_timeout_ms(req: CheckRequest) -> int:
     return int(os.environ.get("SOLVER_TIMEOUT_MS", "10000"))
 
 
+def _archive_example() -> dict:
+    return {
+        "query": (
+            "SELECT s.id, r.value FROM stations s "
+            "LEFT JOIN readings r ON s.id = r.station_id "
+            "WHERE r.value IS NULL OR r.value >= 10"
+        ),
+    }
+
+
 @app.get("/", summary="服务信息")
 def root() -> dict:
     return {
         "service": "sql-equivalence-checker",
         "docs": "/docs",
         "check_endpoint": "POST /check",
+        "archive_endpoint": "POST /archive/script",
         "bound_rows_per_table": MAX_ROWS,
     }
 
@@ -151,4 +171,35 @@ def check_equivalence(
             query_a_result=repro.query_a_result or [],
             query_b_result=repro.query_b_result or [],
         ),
+    )
+
+
+@app.post(
+    "/archive/script",
+    response_model=ArchiveResponse,
+    summary="为 stations LEFT JOIN readings 质控查询生成归档脚本",
+)
+def archive_script(
+    req: ArchiveRequest = Body(
+        openapi_examples={
+            "station-quality-report": {
+                "summary": "站点读数质控：保留无读数站点，按结果元组计数",
+                "value": _archive_example(),
+            }
+        }
+    ),
+) -> ArchiveResponse:
+    try:
+        ir = parse_query(req.query)
+        built = build_archive_script(ir, req.query)
+    except SqlRejected as exc:
+        raise HTTPException(status_code=400, detail=f"SQL 超出受支持子集: {exc}")
+    except ArchiveUnsupported as exc:
+        raise HTTPException(status_code=400, detail=f"不支持的归档查询: {exc}")
+    return ArchiveResponse(
+        script=built.script,
+        canonical_query=built.canonical_query,
+        view=built.view,
+        archive_tables=list(built.archive_tables),
+        view_columns=built.view_columns,
     )
